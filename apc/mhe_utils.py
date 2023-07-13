@@ -5,6 +5,7 @@ from pyomo.core.base.expression import Expression
 from pyomo.core.base.param import Param
 from pyomo.core.base.set import Set
 from pyomo.core.base.var import Var
+from pyomo.core.base.constraint import Constraint
 from pyomo.core.base.component import Component
 from pyomo.core.expr.relational_expr import EqualityExpression
 
@@ -104,6 +105,50 @@ def get_constraint_residual_expression(
         return weights[i]*resid_expr_list[i][t]**2
     resid_expr = Expression(con_set, time, rule=resid_expr_rule)
     return con_set, resid_expr
+
+
+def get_disturbed_constraint_and_residual_expression(
+    time,
+    constraints,
+    con_set,
+    disturb_var,
+    weight_data=None,
+):
+    cuids = [
+        get_indexed_cuid(con, (time,)) for con in constraints
+    ]
+    constraints = [time.model().find_component(cuid) for cuid in cuids]
+
+    if weight_data is None:
+        weight_data = ScalarData(
+            ComponentMap((var, 1.0) for con in constraints)
+        )
+    if not isinstance(weight_data, ScalarData):
+        weight_data = ScalarData(weight_data)
+    for con in constraints:
+        if not weight_data.contains_key(con):
+            raise KeyError(
+                "Tracking weight does not contain a key for"
+                " constraint %s" % con
+            )
+    def _disturbed_con_rule(m, i, t):
+        con = constraints[i][t]
+        if isinstance(con.expr, EqualityExpression):
+            return con.body + disturb_var[i, t] == 0.0
+        else:
+            raise RuntimeError(
+                "Cannot construct a disturbed constraint. Error encountered"
+                "processing the expression"
+                " of constraint %s" % con[t].name
+            )
+    disturbed_con = Constraint(con_set, time, rule=_disturbed_con_rule)
+
+    weights = [weight_data.get_data_from_key(con) for con in constraints]
+    def resid_expr_rule(m, i, t):
+        return weights[i]*disturb_var[i, t]**2
+    resid_expr = Expression(con_set, time, rule=resid_expr_rule)
+
+    return disturbed_con, resid_expr
 
 
 def slice_components(time, components):
